@@ -1,106 +1,133 @@
-#include <esp_now.h>
-#include <WiFi.h>
 #include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+#include <MPU6050_light.h>
+#include <Adafruit_AHTX0.h>
+#include <Adafruit_BMP280.h>
+#include <Adafruit_Sensor.h>
+#include <WiFi.h>
+#include <esp_now.h>
 
-#define SCREEN_WIDTH 128
-#define SCREEN_HEIGHT 64
-#define OLED_ADDRESS 0x3C  // I2C address for SSD1306
+// MPU, AHT20, BMP280
+MPU6050 mpu(Wire);
+Adafruit_AHTX0 aht;
+Adafruit_BMP280 bmp;
 
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+// Timing
+unsigned long timer = 0;
+float base_altitude = 0;
 
-// Data structure matching the sender
+// Structure to send
 typedef struct struct_message {
-    float accelX, accelY, accelZ;
-    float gyroX, gyroY, gyroZ;
-    unsigned long timestamp;
-} struct_message;
+  float pitch;
+  float roll;
+  float yaw;
+  float temp;
+  float rel_alt;
+} SensorData;
 
-struct_message myData;
+SensorData dataToSend;
 
-unsigned long lastTime = 0;
-int packetCount = 0;
+// Receiver MAC Address
+uint8_t receiverAddress[] = {0x30, 0xC9, 0x22, 0x12, 0xED, 0xE0};
 
-// Callback function for receiving data
-void OnDataRecv(const esp_now_recv_info_t *info, const uint8_t *incomingData, int len) {
-    memcpy(&myData, incomingData, sizeof(myData));
-
-    packetCount++;
-    unsigned long currentTime = millis();
-    float timeElapsed = (currentTime - lastTime) / 1000.0;
-
-    if (timeElapsed >= 1.0) {  // Every second
-        float frequency = packetCount / timeElapsed;
-        Serial.print("ESP-NOW Data Frequency: ");
-        Serial.print(frequency);
-        Serial.println(" packets/sec");
-
-        lastTime = currentTime;
-        packetCount = 0;
-    }
-
-    Serial.println("Received IMU Data:");
-    Serial.print("Accel X: "); Serial.println(myData.accelX);
-    Serial.print("Accel Y: "); Serial.println(myData.accelY);
-    Serial.print("Accel Z: "); Serial.println(myData.accelZ);
-    Serial.print("Gyro X: "); Serial.println(myData.gyroX);
-    Serial.print("Gyro Y: "); Serial.println(myData.gyroY);
-    Serial.print("Gyro Z: "); Serial.println(myData.gyroZ);
-
-    // Display on OLED
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-
-    display.setCursor(0, 0);
-    display.println("IMU Data:");
-
-    display.setCursor(0, 10);
-    display.print("AX: "); display.print(myData.accelX, 2);
-
-    display.setCursor(0, 20);
-    display.print("AY: "); display.print(myData.accelY, 2);
-
-    display.setCursor(0, 30);
-    display.print("AZ: "); display.print(myData.accelZ, 2);
-
-    display.setCursor(0, 40);
-    display.print("GX: "); display.print(myData.gyroX, 2);
-
-    display.setCursor(0, 50);
-    display.print("GY: "); display.print(myData.gyroY, 2);
-
-    display.display();
+// ESP-NOW send status callback
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  Serial.print("ESP-NOW Send Status: ");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
 }
 
 void setup() {
-    Serial.begin(115200);
-    WiFi.mode(WIFI_STA);
+  Serial.begin(115200);
+  Wire.begin();
 
-    if (esp_now_init() != ESP_OK) {
-        Serial.println("Error initializing ESP-NOW");
-        return;
-    }
+  // Initialize MPU6050
+  byte status = mpu.begin();
+  if (status != 0) {
+    Serial.print("MPU6050 init failed with code: ");
+    Serial.println(status);
+    while (1) delay(10);
+  }
 
-    esp_now_register_recv_cb(OnDataRecv);
+  Serial.println(F("Calculating gyro offsets..."));
+  delay(1000);
+  mpu.calcGyroOffsets();
+  Serial.println("MPU6050 ready!");
 
-    // Initialize OLED
-    if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS)) {
-        Serial.println("SSD1306 allocation failed");
-        return;
-    }
-    
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 0);
-    display.println("Waiting for Data...");
-    display.display();
+  // Initialize AHT20
+  if (!aht.begin()) {
+    Serial.println("AHT20 not found");
+    while (1) delay(10);
+  }
 
-    lastTime = millis();
+  // Initialize BMP280 at 0x77
+  if (!bmp.begin(0x77)) {
+    Serial.println("BMP280 not found at 0x77");
+    while (1) delay(10);
+  }
+
+  bmp.setSampling(Adafruit_BMP280::MODE_NORMAL,
+                  Adafruit_BMP280::SAMPLING_X2,
+                  Adafruit_BMP280::SAMPLING_X16,
+                  Adafruit_BMP280::FILTER_X16,
+                  Adafruit_BMP280::STANDBY_MS_500);
+
+  delay(500); // Allow sensor to stabilize
+  base_altitude = bmp.readAltitude(1013.25);
+
+  // Init Wi-Fi in Station mode
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+
+  // Init ESP-NOW
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("ESP-NOW init failed");
+    while (1);
+  }
+
+  esp_now_register_send_cb(OnDataSent);
+
+  // Register peer
+  esp_now_peer_info_t peerInfo = {};
+  memcpy(peerInfo.peer_addr, receiverAddress, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+
+  if (!esp_now_add_peer(&peerInfo)) {
+    Serial.println("Peer added");
+  } else {
+    Serial.println("Failed to add peer");
+  }
+
+  Serial.println("System initialized and ready to send data!\n");
 }
 
 void loop() {
-    // Nothing here, ESP-NOW handles receiving data asynchronously
+  mpu.update();
+
+  if ((millis() - timer) > 1000) {
+    timer = millis();
+
+    // Read angles from MPU6050
+    dataToSend.roll  = mpu.getAngleX();
+    dataToSend.pitch = mpu.getAngleY();
+    dataToSend.yaw   = mpu.getAngleZ();
+
+    // Read temperature from AHT20
+    sensors_event_t humidity, temp_aht;
+    aht.getEvent(&humidity, &temp_aht);
+
+    // BMP280 readings
+    float temp_bmp = bmp.readTemperature();
+    float current_alt = bmp.readAltitude(1013.25);
+    dataToSend.rel_alt = current_alt - base_altitude;
+
+    // Fused temperature
+    dataToSend.temp = (temp_aht.temperature + temp_bmp) / 2.0;
+
+    // Send via ESP-NOW
+    esp_err_t result = esp_now_send(receiverAddress, (uint8_t *)&dataToSend, sizeof(dataToSend));
+
+    Serial.println("Sending Data:");
+    Serial.printf("  Pitch: %.2f  Roll: %.2f  Yaw: %.2f\n", dataToSend.pitch, dataToSend.roll, dataToSend.yaw);
+    Serial.printf("  Temp:  %.2f  Rel Alt: %.2f\n\n", dataToSend.temp, dataToSend.rel_alt);
+  }
 }
