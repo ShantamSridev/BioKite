@@ -15,6 +15,12 @@ Adafruit_BMP280 bmp;
 unsigned long timer = 0;
 float base_altitude = 0;
 
+// Battery voltage reading
+const int BATTERY_PIN = A0;
+const float VOLTAGE_DIVIDER_RATIO = 2.0; // Because 220k / (220k + 220k) = 0.5
+const float ADC_MAX = 4095.0;
+const float REF_VOLTAGE = 3.3; // Reference voltage for ESP32S3 ADC
+
 // Structure to send
 typedef struct struct_message {
   float pitch;
@@ -22,6 +28,7 @@ typedef struct struct_message {
   float yaw;
   float temp;
   float rel_alt;
+  float battery; // New field for battery voltage
 } SensorData;
 
 SensorData dataToSend;
@@ -123,11 +130,16 @@ void loop() {
     // Fused temperature
     dataToSend.temp = (temp_aht.temperature + temp_bmp) / 2.0;
 
+    // Read battery voltage
+    int adc_reading = analogRead(BATTERY_PIN);
+    dataToSend.battery = (adc_reading / ADC_MAX) * REF_VOLTAGE * VOLTAGE_DIVIDER_RATIO;
+
     // Send via ESP-NOW
     esp_err_t result = esp_now_send(receiverAddress, (uint8_t *)&dataToSend, sizeof(dataToSend));
 
     Serial.println("Sending Data:");
     Serial.printf("  Pitch: %.2f  Roll: %.2f  Yaw: %.2f\n", dataToSend.pitch, dataToSend.roll, dataToSend.yaw);
-    Serial.printf("  Temp:  %.2f  Rel Alt: %.2f\n\n", dataToSend.temp, dataToSend.rel_alt);
+    Serial.printf("  Temp:  %.2f  Rel Alt: %.2f\n", dataToSend.temp, dataToSend.rel_alt);
+    Serial.printf("  Battery Voltage: %.2f V\n\n", dataToSend.battery);
   }
 }
