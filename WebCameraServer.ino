@@ -1,13 +1,14 @@
 #include "esp_camera.h"
 #include <WiFi.h>
 
-#define CAMERA_MODEL_XIAO_ESP32S3 // Has PSRAM
+
+#define CAMERA_MODEL_XIAO_ESP32S3
 #include "camera_pins.h"
 
 // ===========================
 // Enter your WiFi credentials
 // ===========================
-const char* ssid = "ESP32S3";
+const char* ssid = "ESP32-CAM";
 const char* password = "123456789";
 
 void startCameraServer();
@@ -66,11 +67,6 @@ void setup() {
 #endif
   }
 
-#if defined(CAMERA_MODEL_ESP_EYE)
-  pinMode(13, INPUT_PULLUP);
-  pinMode(14, INPUT_PULLUP);
-#endif
-
   // camera init
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
@@ -90,29 +86,19 @@ void setup() {
     s->set_framesize(s, FRAMESIZE_QVGA);
   }
 
-#if defined(CAMERA_MODEL_M5STACK_WIDE) || defined(CAMERA_MODEL_M5STACK_ESP32CAM)
-  s->set_vflip(s, 1);
-  s->set_hmirror(s, 1);
-#endif
-
-#if defined(CAMERA_MODEL_ESP32S3_EYE)
-  s->set_vflip(s, 1);
-#endif
-
 // Setup LED FLash if LED pin is defined in camera_pins.h
 #if defined(LED_GPIO_NUM)
   setupLedFlash(LED_GPIO_NUM);
 #endif
 
   WiFi.setSleep(false);
-
-  WiFi.softAP(ssid, password);
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP(ssid, password, 1);
 
   startCameraServer();
 
-  Serial.print("Camera Ready! Use 'http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("' to connect");
+  Serial.println("Camera server ready at: http://192.168.4.1");
+  //Serial.print(WiFi.localIP());
 }
 
 void loop() {
