@@ -19,7 +19,7 @@
 #include <esp_now.h>
 
 
-const char* ssid = "ESP32-CAM";
+const char* ssid = "KitePayload";
 const char* password = "123456789";
 
 void startCameraServer();
@@ -39,7 +39,8 @@ const int BATTERY_PIN = A0;
 const float VOLTAGE_DIVIDER_RATIO = 2.0; // Because 220k / (220k + 220k) = 0.5
 const float ADC_MAX = 4095.0;
 const float REF_VOLTAGE = 3.3; // Reference voltage for ESP32S3 ADC
-
+float valpitch;
+float valroll;
 
 // Structure to send
 typedef struct struct_message {
@@ -124,10 +125,12 @@ void sensorTask(){
     SensorData data;
     // Read angles from MPU6050
     mpu.update();
-    data.roll  = mpu.getAngleX();
-    data.pitch = mpu.getAngleY();
+    valpitch  = mpu.getAngleX();
+    valroll = mpu.getAngleY();
     data.yaw   = mpu.getAngleZ();
 
+    data.pitch = -valpitch;
+    data.roll = -valroll;
     // Read temperature from AHT20
     sensors_event_t humidity, temp_aht;
     aht.getEvent(&humidity, &temp_aht);
@@ -247,7 +250,7 @@ void loop() {
   mpu.update();
 
   // Send other sensor data every 500ms
-  if (millis() - lastSensorSend >= 500) {
+  if (millis() - lastSensorSend >= 250) {
     lastSensorSend = millis();
     sensorTask();  // This still calls mpu.getAngleX/Y/Z — fine
   }
